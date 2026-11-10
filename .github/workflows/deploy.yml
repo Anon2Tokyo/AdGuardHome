@@ -54,36 +54,38 @@ jobs:
           ls -lh AdGuardHome
           file AdGuardHome
 
-      - name: Deploy Binary to proxy-1
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          source: "AdGuardHome"
-          target: "/tmp"
+      - name: Deploy to proxy-1 via OpenSSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: Install and Start Service on proxy-1
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
+          echo "Uploading AdGuardHome binary..."
+          scp -P "$SSH_PORT" -i ~/.ssh/id_rsa AdGuardHome "$SSH_USER@$SSH_HOST:/tmp/AdGuardHome"
+
+          echo "Installing and starting AdGuardHome service..."
+          ssh -p "$SSH_PORT" -i ~/.ssh/id_rsa "$SSH_USER@$SSH_HOST" << 'EOF'
+            set -e
             sudo mkdir -p /opt/AdGuardHome
-            # Stop existing service if running before overwriting binary
             if systemctl is-active --quiet AdGuardHome; then
+              echo "Stopping existing AdGuardHome service..."
               sudo systemctl stop AdGuardHome
             fi
             sudo mv /tmp/AdGuardHome /opt/AdGuardHome/AdGuardHome
             sudo chmod +x /opt/AdGuardHome/AdGuardHome
             if [ ! -f /etc/systemd/system/AdGuardHome.service ]; then
-              echo "Registering AdGuardHome systemd service..."
+              echo "Installing AdGuardHome service..."
               sudo /opt/AdGuardHome/AdGuardHome -s install
             fi
             sudo systemctl daemon-reload
             sudo systemctl enable AdGuardHome
             sudo systemctl restart AdGuardHome
+            echo "AdGuardHome service status:"
             systemctl status AdGuardHome --no-pager
+          EOF

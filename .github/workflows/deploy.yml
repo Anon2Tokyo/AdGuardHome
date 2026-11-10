@@ -1,0 +1,89 @@
+name: Build from Source and Deploy to proxy-1
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Cache Node Modules
+        uses: actions/cache@v4
+        with:
+          path: client_v2/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('client_v2/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Cache Go Modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build Frontend & Backend
+        run: |
+          make deps
+          CHANNEL=development make quick-build
+
+      - name: Verify Binary
+        run: |
+          ls -lh AdGuardHome
+          file AdGuardHome
+
+      - name: Deploy Binary to proxy-1
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "AdGuardHome"
+          target: "/tmp"
+
+      - name: Install and Start Service on proxy-1
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            sudo mkdir -p /opt/AdGuardHome
+            # Stop existing service if running before overwriting binary
+            if systemctl is-active --quiet AdGuardHome; then
+              sudo systemctl stop AdGuardHome
+            fi
+            sudo mv /tmp/AdGuardHome /opt/AdGuardHome/AdGuardHome
+            sudo chmod +x /opt/AdGuardHome/AdGuardHome
+            if [ ! -f /etc/systemd/system/AdGuardHome.service ]; then
+              echo "Registering AdGuardHome systemd service..."
+              sudo /opt/AdGuardHome/AdGuardHome -s install
+            fi
+            sudo systemctl daemon-reload
+            sudo systemctl enable AdGuardHome
+            sudo systemctl restart AdGuardHome
+            systemctl status AdGuardHome --no-pager
